@@ -8,8 +8,8 @@ const fromB64url = (s) => Uint8Array.from(atob(s.replace(/-/g,"+").replace(/_/g,
 async function sha256(value) { return b64url(await crypto.subtle.digest("SHA-256", enc.encode(value))); }
 async function passwordHash(password, salt = crypto.randomUUID()) {
   const key = await crypto.subtle.importKey("raw", enc.encode(password), "PBKDF2", false, ["deriveBits"]);
-  const bits = await crypto.subtle.deriveBits({name:"PBKDF2", salt:enc.encode(salt), iterations:310000, hash:"SHA-256"}, key, 256);
-  return `pbkdf2_sha256$310000$${salt}$${b64url(bits)}`;
+  const bits = await crypto.subtle.deriveBits({name:"PBKDF2", salt:enc.encode(salt), iterations:100000, hash:"SHA-256"}, key, 256);
+  return `pbkdf2_sha256$100000$${salt}$${b64url(bits)}`;
 }
 async function verifyPassword(password, stored) {
   const [scheme, iterations, salt, expected] = (stored || "").split("$");
