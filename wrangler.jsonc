@@ -1,0 +1,17 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "asignacion-hsm",
+  "main": "Hacienda_Santa_Maria_Login_FIX1/src/index.js",
+  "compatibility_date": "2026-11-05",
+  "assets": {
+    "directory": "Hacienda_Santa_Maria_Login_FIX1/public",
+    "binding": "ASSETS"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "asignacion-hsm",
+      "database_id": "d82ce917-979b-4c04-9799-d6e9a449f056"
+    }
+  ]
+}
