@@ -80,15 +80,15 @@ async function handleApi(request, env, url) {
   }
   if (path === "/api/users" && method === "POST") {
     const auth=await requireUser(request,env,"admin"); if(auth.response)return auth.response;
-    const b=await request.json().catch(()=>null);
-    if(!b || !/^[a-zA-Z0-9._-]{3,40}$/.test(b.username||"") || typeof b.password!=="string" || b.password.length<6 || !["admin","user"].includes(b.role)) return fail("Datos inválidos. Usuario de 3-40 caracteres, contraseña de al menos 6 y rol válido.");
+    const b=await request.json().catch(()=>null), username=typeof b?.username==="string"?b.username.trim():"";
+    if(!b || username.length<3 || username.length>40 || typeof b.password!=="string" || b.password.length<6 || !["admin","user"].includes(b.role)) return fail("Datos inválidos. Usuario de 3-40 caracteres y contraseña de al menos 6.");
     const id=crypto.randomUUID(), hash=await passwordHash(b.password);
     try {
       await env.DB.prepare("INSERT INTO users(id,username,password_hash,display_name,role,active,created_at) VALUES(?,?,?,?,?,1,datetime('now'))")
-        .bind(id,b.username,hash,b.displayName||b.username,b.role).run();
+        .bind(id,username,hash,b.displayName||username,b.role).run();
     } catch { return fail("No se pudo crear el usuario. Verificá que no exista.",409); }
-    await audit(env,auth.user.id,"create","user",id,{username:b.username,role:b.role});
-    return json({id,username:b.username,role:b.role},201);
+    await audit(env,auth.user.id,"create","user",id,{username,role:b.role});
+    return json({id,username,role:b.role},201);
   }
   const userMatch=path.match(/^\/api\/users\/([0-9a-f-]+)$/i);
   if(userMatch && method==="PATCH"){

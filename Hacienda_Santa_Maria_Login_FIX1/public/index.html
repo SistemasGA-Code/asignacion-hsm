@@ -662,7 +662,7 @@ updateTotal();
  async function logout(){try{await api('/auth/logout',{method:'POST'});}catch{}activeUser=null;show('login');$('loginPassword').value='';}
  $('createUserForm').addEventListener('submit',async e=>{
   e.preventDefault();const username=$('newUsername').value.trim(),password=$('newPassword').value,displayName=$('newDisplayName').value.trim(),role=$('newRole').value;
-  if(!/^[a-zA-Z0-9._-]{3,40}$/.test(username)){setMessage($('adminMessage'),'Usá 3 a 40 caracteres: letras, números, punto, guion o guion bajo.','error');return;}
+  if(username.length<3||username.length>40){setMessage($('adminMessage'),'El usuario debe tener de 3 a 40 caracteres.','error');return;}
   if(password.length<6){setMessage($('adminMessage'),'La contraseña debe tener al menos 6 caracteres.','error');return;}
   try{await api('/users',{method:'POST',body:JSON.stringify({username,password,displayName:displayName||username,role})});$('createUserForm').reset();await renderUsers();setMessage($('adminMessage'),'Usuario creado correctamente.','ok');}
   catch(err){setMessage($('adminMessage'),err.message,'error');}
