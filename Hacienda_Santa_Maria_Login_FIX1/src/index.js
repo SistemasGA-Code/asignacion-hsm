@@ -81,7 +81,7 @@ async function handleApi(request, env, url) {
   if (path === "/api/users" && method === "POST") {
     const auth=await requireUser(request,env,"admin"); if(auth.response)return auth.response;
     const b=await request.json().catch(()=>null);
-    if(!b || !/^[a-zA-Z0-9._-]{3,40}$/.test(b.username||"") || typeof b.password!=="string" || b.password.length<12 || !["admin","user"].includes(b.role)) return fail("Datos inválidos. Usuario de 3-40 caracteres, contraseña de al menos 12 y rol válido.");
+    if(!b || !/^[a-zA-Z0-9._-]{3,40}$/.test(b.username||"") || typeof b.password!=="string" || b.password.length<6 || !["admin","user"].includes(b.role)) return fail("Datos inválidos. Usuario de 3-40 caracteres, contraseña de al menos 6 y rol válido.");
     const id=crypto.randomUUID(), hash=await passwordHash(b.password);
     try {
       await env.DB.prepare("INSERT INTO users(id,username,password_hash,display_name,role,active,created_at) VALUES(?,?,?,?,?,1,datetime('now'))")
