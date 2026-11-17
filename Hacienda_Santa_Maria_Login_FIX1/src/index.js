@@ -167,6 +167,18 @@ async function handleApi(request, env, url, ctx) {
     return json({id,username,role:b.role},201);
   }
   const userMatch=path.match(/^\/api\/users\/([0-9a-f-]+)$/i);
+  const passwordMatch=path.match(/^\/api\/users\/([0-9a-f-]+)\/password$/i);
+  if(passwordMatch && method==="PATCH"){
+    const auth=await requireUser(request,env,"admin");if(auth.response)return auth.response;
+    const b=await request.json().catch(()=>null);
+    if(!b || typeof b.password!=="string" || b.password.length<6)return fail("La contraseña debe tener al menos 6 caracteres.");
+    const target=await env.DB.prepare("SELECT id FROM users WHERE id=? AND active=1").bind(passwordMatch[1]).first();
+    if(!target)return fail("Usuario no encontrado.",404);
+    await env.DB.prepare("UPDATE users SET password_hash=? WHERE id=?").bind(await passwordHash(b.password),target.id).run();
+    await env.DB.prepare("DELETE FROM sessions WHERE user_id=?").bind(target.id).run();
+    await audit(env,auth.user.id,"reset_password","user",target.id);
+    return json({ok:true});
+  }
   if(userMatch && method==="PATCH"){
     const auth=await requireUser(request,env,"admin");if(auth.response)return auth.response;
     const b=await request.json().catch(()=>null);
