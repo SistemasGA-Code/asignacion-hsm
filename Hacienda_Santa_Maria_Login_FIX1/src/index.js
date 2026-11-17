@@ -1,8 +1,11 @@
+import { connect } from "cloudflare:sockets";
+
 const json = (data, status = 200) => new Response(JSON.stringify(data), {
   status, headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" }
 });
 const fail = (message, status = 400) => json({ error: message }, status);
 const enc = new TextEncoder();
+const dec = new TextDecoder();
 const b64url = (bytes) => btoa(String.fromCharCode(...new Uint8Array(bytes))).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,"");
 const fromB64url = (s) => Uint8Array.from(atob(s.replace(/-/g,"+").replace(/_/g,"/")), c=>c.charCodeAt(0));
 async function sha256(value) { return b64url(await crypto.subtle.digest("SHA-256", enc.encode(value))); }
@@ -46,10 +49,83 @@ async function audit(env, actorId, action, entityType, entityId, details = null)
   await env.DB.prepare(`INSERT INTO audit_logs(id,actor_user_id,action,entity_type,entity_id,details_json,created_at)
     VALUES(?,?,?,?,?,?,datetime('now'))`).bind(crypto.randomUUID(),actorId,action,entityType,entityId,details?JSON.stringify(details):null).run();
 }
-async function handleApi(request, env, url) {
+const smtpBase64=value=>btoa(String.fromCharCode(...enc.encode(value)));
+async function smtpReply(reader, expected) {
+  let reply="";
+  while(true) {
+    const {value,done}=await reader.read();
+    if(done) throw new Error("El servidor SMTP cerró la conexión.");
+    reply+=dec.decode(value,{stream:true});
+    const final=reply.match(/(?:^|\r\n)(\d{3}) [^\r\n]*\r\n$/);
+    if(!final) continue;
+    if(!expected.includes(Number(final[1]))) throw new Error(`SMTP rechazó la solicitud (${final[1]}).`);
+    return reply;
+  }
+}
+async function smtpCommand(reader, writer, command, expected) {
+  await writer.write(enc.encode(`${command}\r\n`));
+  return smtpReply(reader,expected);
+}
+function smtpSettings(env) {
+  const host=String(env.SMTP_HOST||"smtp.office365.com").trim(), user=String(env.SMTP_USER||"");
+  const password=String(env.SMTP_PASSWORD||""), from=String(env.SMTP_FROM||user).trim().toLowerCase();
+  const port=Number(env.SMTP_PORT||587), security=String(env.SMTP_SECURITY||"starttls").toLowerCase();
+  return host&&user&&password&&/^\S+@\S+\.\S+$/.test(from)&&Number.isInteger(port)&&port>0&&port<65536&&["tls","starttls"].includes(security)
+    ? {host,user,password,from,port,security}:null;
+}
+const emailText=(value,max=160)=>String(value??"").replace(/[\r\n]+/g," ").trim().slice(0,max);
+function assignmentEmailBody(record,user,date=new Date()) {
+  const data=record.form_data||{}, currency=data.currency==="USD"?"USD":"GTQ";
+  const money=value=>{const n=Number(String(value??"").replace(/[^0-9.-]/g,""));return Number.isFinite(n)?new Intl.NumberFormat(currency==="USD"?"en-US":"es-GT",{style:"currency",currency}).format(n):"Sin dato";};
+  const timestamp=new Intl.DateTimeFormat("es-GT",{dateStyle:"long",timeStyle:"short",timeZone:"America/Guatemala",hourCycle:"h23"}).format(date);
+  const property=[emailText(data.finca),emailText(data.folio),emailText(data.libro),emailText(data.propiedad)].filter(Boolean).join(" · ")||"Sin identificar";
+  return [
+    record.parent_id?"Asignación actualizada":"Nueva asignación registrada",
+    `Fecha: ${timestamp} (Guatemala)`,
+    `Usuario: ${emailText(user.display_name||user.username)}`,
+    `Solicitante: ${emailText(data.nombre)||"Sin nombre"}`,
+    `Propiedad: ${property}`,
+    `Área: ${[emailText(data.area),emailText(data.areaUnidad,12)].filter(Boolean).join(" ")||"Sin dato"}`,
+    `Precio de venta: ${money(data.precio)}`,
+    `Enganche pactado: ${money(data.enganche)}`,
+    `Saldo a financiar: ${money(data.saldo)}`,
+    `Inicio de pagos: ${emailText(data.paymentStartDate,20)||"Sin fecha"}`,
+    `Registro: ${record.id}`,
+  ].join("\n");
+}
+async function notifyAssignment(env,record,user) {
+  const settings=smtpSettings(env);
+  if(!settings) return;
+  const socket=connect({hostname:settings.host,port:settings.port},{secureTransport:settings.security==="tls"?"on":"starttls"});
+  let activeSocket=socket, reader=socket.readable.getReader(), writer=socket.writable.getWriter();
+  try {
+    await socket.opened; await smtpReply(reader,[220]);
+    await smtpCommand(reader,writer,"EHLO asignacion.haciendasantamaria.gt",[250]);
+    if(settings.security==="starttls") {
+      await smtpCommand(reader,writer,"STARTTLS",[220]);
+      reader.releaseLock(); writer.releaseLock();
+      activeSocket=socket.startTls(); reader=activeSocket.readable.getReader(); writer=activeSocket.writable.getWriter();
+      await activeSocket.opened; await smtpCommand(reader,writer,"EHLO asignacion.haciendasantamaria.gt",[250]);
+    }
+    await smtpCommand(reader,writer,"AUTH LOGIN",[334]);
+    await smtpCommand(reader,writer,smtpBase64(settings.user),[334]);
+    await smtpCommand(reader,writer,smtpBase64(settings.password),[235]);
+    await smtpCommand(reader,writer,`MAIL FROM:<${settings.from}>`,[250]);
+    await smtpCommand(reader,writer,"RCPT TO:<frivera@grupoa.net>",[250,251]);
+    await smtpCommand(reader,writer,"RCPT TO:<jtownson1@gmail.com>",[250,251]);
+    await smtpCommand(reader,writer,"DATA",[354]);
+    const body=assignmentEmailBody(record,user).replace(/\r?\n/g,"\n").replace(/^\./gm,"..").replace(/\n/g,"\r\n");
+    const subject=record.parent_id?"Asignación actualizada":"Nueva asignación generada";
+    const message=`From: ${settings.from}\r\nTo: frivera@grupoa.net, "jtownson1" <jtownson1@gmail.com>\r\nSubject: ${subject}\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\n${body}`;
+    await smtpCommand(reader,writer,`${message}\r\n.`,[250]); await smtpCommand(reader,writer,"QUIT",[221]);
+  } finally {
+    reader.releaseLock(); writer.releaseLock(); await activeSocket.close();
+  }
+}
+async function handleApi(request, env, url, ctx) {
   const path = url.pathname, method = request.method;
   // Health check no depende de la base de datos: permite comprobar que el Worker responde.
-  if (path === "/api/health" && method === "GET") return json({ok:true, service:"hsm-worker-api", databaseConfigured:Boolean(env.DB)});
+  if (path === "/api/health" && method === "GET") return json({ok:true, service:"hsm-worker-api", databaseConfigured:Boolean(env.DB), emailConfigured:Boolean(smtpSettings(env))});
   if (!env.DB) return fail("La capa de base de datos aún no está configurada para este entorno.", 503);
   if (path === "/api/auth/login" && method === "POST") {
     const body = await request.json().catch(()=>null);
@@ -140,6 +216,7 @@ async function handleApi(request, env, url) {
     await env.DB.prepare(`INSERT INTO records(id,parent_id,created_by_user_id,form_data_json,created_at,updated_at)
       VALUES(?,?,?,?,datetime('now'),datetime('now'))`).bind(id,parentId,auth.user.id,JSON.stringify(b.form_data)).run();
     await audit(env,auth.user.id,"create","record",id,{parent_id:parentId});
+    ctx?.waitUntil(notifyAssignment(env,{id,parent_id:parentId,form_data:b.form_data},auth.user).catch(error=>console.error("HSM assignment email error",error)));
     return json({id},201);
   }
   if(path.startsWith("/api/records/") && method==="DELETE"){
@@ -155,10 +232,10 @@ async function handleApi(request, env, url) {
   return fail("Ruta no encontrada.",404);
 }
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const url=new URL(request.url);
     if(url.pathname.startsWith("/api/")) {
-      try { return await handleApi(request,env,url); }
+      try { return await handleApi(request,env,url,ctx); }
       catch(e) { console.error("HSM API error",e); return fail("Error interno del servidor.",500); }
     }
     if(env.ASSETS) return env.ASSETS.fetch(request);
